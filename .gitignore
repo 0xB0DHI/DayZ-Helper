@@ -1,0 +1,17 @@
+out/
+.vs/
+*.obj
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.lib
+*.exe
+*.sys
+*.log
+*.dmp
+*.user
+*.tlog
+dayz.ini
+Desktop.ini
+Thumbs.db

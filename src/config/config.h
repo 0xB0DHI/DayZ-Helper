@@ -1,0 +1,90 @@
+#pragma once
+#include <cstdint>
+#include <array>
+#include <string>
+#include <unordered_map>
+
+struct Config {
+    struct BonePair { std::uint8_t from=0,to=0; };
+    std::wstring path;
+    std::wstring process;
+    std::wstring module;
+    std::wstring version;
+    std::wstring image;
+    std::unordered_map<std::string, std::uint64_t> offsets;
+    std::uint32_t maxReads = 0;
+    std::uint32_t maxTableEntries = 0;
+    std::uint32_t maxTableCount = 0;
+    std::uint32_t maxMapCapacity = 0;
+    std::uint32_t maxInfectedScan = 0;
+    std::uint32_t maxItemEntriesPerBucket = 0;
+    std::uint32_t maxScoreboardEntries = 0;
+    std::uint32_t playerRegionBytes = 0;
+    bool staticRectangle = false;
+    bool infectedMarker = false;
+    std::uint32_t markerScanMs = 0;
+    std::uint32_t markerMaxDistance = 0;
+    std::uint32_t markerMaxEntities = 0;
+    std::uint32_t markerHeightCm = 0;
+    std::uint32_t entityScanMs = 1000;
+    std::uint32_t entityScanLimit = 2048;
+    std::array<std::uint32_t,5> gateMeters{{1200,1200,1200,1200,300}};
+    std::uint32_t skeletonGateMeters = 300;
+    std::array<bool,4> showEntities{{true,true,true,true}};
+    std::array<std::uint32_t,4> entityColors{{0x56E8FF,0x78FF89,0xFFCB74,0xFF8E7C}};
+    std::array<std::uint32_t,5> itemQualityColors{{0xD6FFAD,0xACD6B3,0xFFE19B,0xFFAB84,0xBB8585}};
+    bool compactHud = true;
+    bool cameraHud = false;
+    bool funnelHud = false;
+    bool debugReadHud = false;
+    bool showSkeleton = false;
+    bool rawBonePoints = false;
+    std::array<std::array<BonePair,24>,2> skeletonPairs{};
+    std::array<std::uint8_t,2> skeletonPairCounts{};
+    bool watchHealthCandidates = false;
+    bool watchDeathCandidates = false;
+    bool showLocalPlayer = false;
+    bool showHeldItem = true;
+    bool showPlayerNames = true;
+    bool showInfectedNames = true;
+    bool showBoxes = true;
+    bool hideDeadPlayers = true;
+    bool showItems = true;
+    std::array<bool,8> showItemCategory{{true,true,true,true,true,true,true,true}};
+    std::array<std::uint32_t,8> itemCategoryGateMeters{{300,300,300,300,300,300,300,300}};
+    std::array<int,8> itemCategoryPriority{{0,0,0,0,0,0,0,0}};
+    std::array<std::uint32_t,8> itemCategoryNearMeters{{30,30,30,30,30,30,30,30}};
+    std::array<std::uint32_t,8> itemCategoryMidMeters{{150,150,150,150,150,150,150,150}};
+    std::array<bool,8> itemCategoryFarName{{true,true,true,true,true,true,true,true}};
+    std::array<bool,8> itemCategoryNearDistance{{true,true,true,true,true,true,true,true}};
+    std::array<bool,8> itemCategoryNearQuality{{true,true,true,true,true,true,true,true}};
+    std::array<std::uint32_t,8> itemCategoryNameMeters{{55,55,55,55,55,55,55,55}};
+    std::array<std::uint32_t,8> itemCategoryColors{{0xF2C46E,0xE8A77C,0x70D9BB,0xB8DC81,
+        0x8FBDE4,0xC0A8E2,0xBAC9CD,0x6DD5DF}};
+    std::uint32_t itemNameMeters = 55;
+    std::uint32_t itemSplitMeters = 8;
+    bool itemUseIcons = true;
+    bool itemAnchoredLists = true;
+    bool itemFocusOnly = false;
+    std::uint32_t itemFocusRadiusPixels = 220;
+    std::uint32_t itemGroupRadiusCm = 160;
+    std::uint32_t itemIconOpacity = 165;
+    int itemToggleKey = 0x71;
+    int coordinateCopyKey = 0x72;
+    std::uint32_t itemNearMeters = 30;
+    std::uint32_t itemMidMeters = 150;
+    bool itemFarName = true;
+    std::uint32_t itemFarAlpha = 130;
+    bool itemNearDistance = true;
+    bool itemNearQuality = true;
+    bool itemGrid = true;
+    std::uint32_t itemCellPixels = 64;
+    bool itemClusterCount = true;
+    bool itemCompact = false;
+    int panelKey = 0x70;
+    int endKey = 0;
+    bool Load(const std::wstring& filename);
+    bool Save() const;
+    bool EditValue(const std::string& section,const std::string& key,const std::string& value);
+    std::uint64_t Offset(const char* key) const;
+};
