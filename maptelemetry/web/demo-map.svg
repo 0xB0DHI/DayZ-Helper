@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#172021"/>
+  <g fill="none" stroke="#9edcba" stroke-opacity=".10" stroke-width="1">
+    <path d="M64 0v512M128 0v512M192 0v512M256 0v512M320 0v512M384 0v512M448 0v512"/>
+    <path d="M0 64h512M0 128h512M0 192h512M0 256h512M0 320h512M0 384h512M0 448h512"/>
+  </g>
+  <g fill="none" stroke="#9edcba" stroke-opacity=".14" stroke-width="1.5">
+    <path d="M0 0h512v512H0zM256 0v512M0 256h512"/>
+  </g>
+  <path d="M-20 193c86-90 140-78 214-39s145 24 180-21 91-43 158-8M-20 392c88-55 123-43 177-2s97 43 157 0 130-41 218 10" fill="none" stroke="#9edcba" stroke-opacity=".12" stroke-width="2"/>
+  <text x="20" y="490" fill="#9edcba" fill-opacity=".42" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" letter-spacing="2">SCHEMATIC MAP PREVIEW</text>
+</svg>

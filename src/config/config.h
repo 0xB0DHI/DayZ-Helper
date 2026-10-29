@@ -29,7 +29,10 @@ struct Config {
     std::uint32_t entityScanMs = 1000;
     std::uint32_t entityScanLimit = 2048;
     std::array<std::uint32_t,5> gateMeters{{1200,1200,1200,1200,300}};
+    std::uint32_t mapItemGateMeters = 1200;
     std::uint32_t skeletonGateMeters = 300;
+    std::uint32_t pipLensRadiusPercent = 40;
+    std::uint32_t pipHorizontalScalePercent = 93;
     std::array<bool,4> showEntities{{true,true,true,true}};
     std::array<std::uint32_t,4> entityColors{{0x56E8FF,0x78FF89,0xFFCB74,0xFF8E7C}};
     std::array<std::uint32_t,5> itemQualityColors{{0xD6FFAD,0xACD6B3,0xFFE19B,0xFFAB84,0xBB8585}};
@@ -39,6 +42,24 @@ struct Config {
     bool debugReadHud = false;
     bool showSkeleton = false;
     bool rawBonePoints = false;
+    bool aimAssistEnabled = false;
+    bool aimTargetInfected = true;
+    bool aimShowFov = false;
+    bool aimSoloCalibration = false;
+    int aimHoldKey = 0x06; // XBUTTON2, polled only while DayZ has focus.
+    std::uint32_t aimFovPixels = 140;
+    std::uint32_t aimGateMeters = 1000;
+    std::uint32_t aimPrebindGateMeters = 250;
+    std::uint32_t aimBone = 1; // 0 head, 1 neck, 2 chest/spine.
+    std::uint32_t aimHysteresisPercent = 25;
+    std::uint32_t aimSnapStrength = 5;
+    std::uint32_t aimRatePixelsPerSecond = 900;
+    std::uint32_t aimAccelerationPixelsPerSecond2 = 3600;
+    bool aimPredictionEnabled = false;
+    std::uint32_t aimPredictionGateMeters = 1000;
+    std::uint32_t aimVelocityWindowMs = 200;
+    std::uint32_t aimVelocityMaxMetersPerSecond = 25;
+    std::unordered_map<std::string,float> aimMuzzleFallbacks;
     std::array<std::array<BonePair,24>,2> skeletonPairs{};
     std::array<std::uint8_t,2> skeletonPairCounts{};
     bool watchHealthCandidates = false;
@@ -87,4 +108,5 @@ struct Config {
     bool Save() const;
     bool EditValue(const std::string& section,const std::string& key,const std::string& value);
     std::uint64_t Offset(const char* key) const;
+    float AimFallbackMps(const std::string& weaponClass) const;
 };

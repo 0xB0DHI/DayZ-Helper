@@ -97,6 +97,11 @@ inline bool SkeletonEnabled(EntityKind kind,const std::array<bool,4>& categories
            (kind==EntityKind::Player || kind==EntityKind::Infected) &&
            categories[Index(kind)];
 }
+inline bool AimTargetEnabled(EntityKind kind,const std::array<bool,4>& categories,
+                             bool targetInfected) {
+    return (kind==EntityKind::Player && categories[0]) ||
+           (kind==EntityKind::Infected && categories[1] && targetInfected);
+}
 inline std::uint32_t AdaptiveReadCap(std::size_t cachedObjects,std::uint32_t hardCap) {
     const auto estimate=1024ull+static_cast<unsigned long long>(cachedObjects)*8ull;
     return static_cast<std::uint32_t>(std::min<unsigned long long>(

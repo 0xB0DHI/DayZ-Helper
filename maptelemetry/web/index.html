@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DayZ Map Telemetry</title>
+  <link rel="stylesheet" href="/vendor/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/features.css?v=8">
+</head>
+<body>
+  <div id="map" aria-label="Live terrain map"></div>
+  <div class="vignette" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark"></span><div><strong>DAYZ</strong><span>MAP TELEMETRY · MADE BY 0xB0DHI</span></div></div>
+    <div class="top-actions">
+      <label class="map-picker">TERRAIN <select id="terrain"></select></label>
+      <button id="calibrateButton" class="button" type="button">Calibrate map</button>
+      <div id="connection" class="status offline"><span class="status-dot"></span><span id="connectionText">Waiting for controller</span></div>
+    </div>
+  </header>
+  <aside class="sidebar">
+    <section class="panel nearby-panel">
+      <div class="section-head"><h2>Nearby finds</h2><span id="nearbyAnchor">BODHI</span></div>
+      <div class="nearby-toolbar">
+        <label>WITHIN <select id="nearbyRange" aria-label="Nearby item range"><option value="50">50 m</option><option value="100" selected>100 m</option><option value="300">300 m</option></select></label>
+        <label>FOCUS <select id="nearbyFocus" aria-label="Nearby item priority"><option value="balanced">Balanced</option><option value="survival">Survival</option><option value="combat">Combat</option></select></label>
+      </div>
+      <div id="nearbyList" class="nearby-list"><p class="empty">Waiting for nearby items.</p></div>
+      <button id="nearbyExpand" class="nearby-expand hidden" type="button">Show all</button>
+    </section>
+    <section class="panel players-panel">
+      <div class="section-head"><h2>Survivors</h2><span id="playerCount">0 NEARBY</span></div>
+      <div class="follow-toolbar">
+        <div><small>MAP CAMERA</small><strong id="followStatus">Free map</strong></div>
+        <div class="follow-actions"><button id="followLocal" type="button">Follow Bodhi</button><button id="followFree" type="button" class="active">Free</button></div>
+      </div>
+      <label class="switch-row sight-switch"><input id="showSight" type="checkbox" checked><b>Player facing cones</b></label>
+      <div id="playerList" class="player-list"><p class="empty">Waiting for a published frame.</p></div>
+    </section>
+    <section class="panel">
+      <div class="section-head"><h2>Map layers</h2><span>ON MAP</span></div>
+      <div id="layerControls" class="control-list"></div>
+    </section>
+    <section class="panel">
+      <div class="section-head"><h2>Loot categories</h2><span>FILTER</span></div>
+      <div id="lootControls" class="loot-grid"></div>
+    </section>
+  </aside>
+  <div id="calibration" class="calibration hidden" role="dialog" aria-label="Map calibration">
+    <div class="section-head"><h2>Calibrate this terrain</h2><button id="closeCalibration" class="icon-button" aria-label="Close">×</button></div>
+    <p>Stand at a known location, then click that location on the map. A second well separated point gives a provisional north-up fit. A third checks that fit and resolves rotation; a fourth measures the final error.</p>
+    <div id="calibrationStatus" class="calibration-status">Select a terrain to begin.</div>
+    <div class="calibration-actions"><button id="resetCalibration" class="button secondary">Clear points</button><span id="calibrationLive">Local position unavailable</span></div>
+  </div>
+  <div id="uncalibrated" class="uncalibrated hidden">Map position needs calibration. Use <b>Calibrate map</b> to match game coordinates to this image.</div>
+  <div class="map-controls"><button id="zoomIn" aria-label="Zoom in">+</button><button id="zoomOut" aria-label="Zoom out">−</button></div>
+  <div class="compass" aria-label="Heading"><span>N</span><div id="compassArrow">↑</div><small id="headingText">—</small></div>
+  <footer class="statsbar">
+    <div class="stat"><span>POSITION</span><strong id="position">— / —</strong></div>
+    <div class="stat"><span>GRID</span><strong id="grid">—</strong></div>
+    <div class="stat"><span>NEARBY</span><strong id="counts">—</strong></div>
+    <div class="stat"><span>ZOOM</span><strong id="zoom">—</strong></div>
+    <div class="stat scale-stat"><span>SCALE</span><strong id="scale">—</strong></div>
+  </footer>
+  <script src="/vendor/leaflet.js"></script>
+  <script src="/app.js?v=15"></script>
+</body>
+</html>

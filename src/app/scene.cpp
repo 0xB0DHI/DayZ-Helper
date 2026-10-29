@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace {
@@ -74,6 +75,7 @@ const char* KindName(visual::EntityKind kind) {
 
 SceneCache::SceneCache() {
     objects_.reserve(4096);identities_.reserve(64);itemCandidates_.reserve(4096);
+    mapOnlyItems_.reserve(4096);mapPlayerPoints_.reserve(512);
     sourceSlots_.reserve(512);skeletonCandidates_.reserve(4096);
     itemOrder_.reserve(4096);gridNext_.reserve(4096);
     selectedItems_.reserve(4096);groupCounts_.reserve(4096);
@@ -84,12 +86,34 @@ SceneCache::SceneCache() {
 void SceneCache::Clear() {
     world_=local_=nearestPlayer_=0;objects_.clear();identities_.clear();maxObserved_.fill(0);
     localPosition_={};
+    heldWeapon_={};muzzleBinding_={};localVelocityHistory_.Reset();
+    localVelocity_={};localVelocityValid_=false;currentSampleFrame_=0;
     sources_.fill({});
     scanSource_=scanSlot_=scanTotal_=0;sourceLoaded_=false;sourceSlots_.clear();
-    previousVisibleItems_.clear();
+    previousVisibleItems_.clear();mapOnlyItems_.clear();mapPlayerPoints_.clear();
+    mapItemsRequested_=false;
 }
 void SceneCache::CarryItemWinnerHistory(SceneCache& next) {
     previousVisibleItems_.swap(next.previousVisibleItems_);
+    if (world_!=next.world_) return;
+    if (local_==next.local_) next.localVelocityHistory_=localVelocityHistory_;
+    if (std::none_of(objects_.begin(),objects_.end(),
+            [](const Object& object){return object.velocityHistory.entity!=0 || object.bonesReady;})) return;
+    std::unordered_map<std::uint64_t,const Object*> old;
+    old.reserve(objects_.size());
+    for (const auto& object:objects_) old.emplace(object.entity,&object);
+    for (auto& object:next.objects_) {
+        const auto found=old.find(object.entity);
+        if (found!=old.end() && found->second->type==object.type &&
+            found->second->kind==object.kind &&
+            found->second->netId==object.netId) {
+            object.velocityHistory=found->second->velocityHistory;
+            if (!object.bonesReady && found->second->bonesReady) {
+                object.bones=found->second->bones;
+                object.bonesReady=true;
+            }
+        }
+    }
 }
 bool SceneCache::LoadSource(PlaceholderReader& reader,const Config& config,std::uint32_t sourceIndex) {
     Source source{};
@@ -162,9 +186,16 @@ void SceneCache::ProcessCurrent(PlaceholderReader& reader,const Config& config,s
                 maxObserved_[visual::Index(kind)]=std::max(maxObserved_[visual::Index(kind)],distance);
             }
         }
-        if (visual::SkeletonEnabled(kind,config.showEntities,config.showSkeleton) &&
+        const bool drawSkeleton=visual::SkeletonEnabled(kind,config.showEntities,
+            config.showSkeleton);
+        const bool resolveForAim=config.aimAssistEnabled && !config.aimSoloCalibration &&
+            visual::AimTargetEnabled(kind,config.showEntities,config.aimTargetInfected);
+        const float boneGate=static_cast<float>(std::max(
+            drawSkeleton?config.skeletonGateMeters:0u,
+            resolveForAim?std::min(config.aimGateMeters,config.aimPrebindGateMeters):0u));
+        if (boneGate>0 &&
             object.hasScanDistance &&
-            object.scanDistance<=static_cast<float>(config.skeletonGateMeters)+30.0f &&
+            object.scanDistance<=boneGate+30.0f &&
             reader.Reads()+24<reader.PassCap()) {
             object.bonesReady=game::ResolveBones(reader,config,entity,type,
                 kind==visual::EntityKind::Infected,object.bones);
@@ -204,13 +235,16 @@ const char* SceneCache::PlayerName(std::uint32_t id) const {
     return "";
 }
 bool SceneCache::BeginRefresh(PlaceholderReader& reader,const Config& config,
-                              std::uint64_t module,std::uint64_t world) {
+                              std::uint64_t module,std::uint64_t world,bool mapItemsRequested) {
     Clear();
     for (auto& entries:membership_) entries.reserve(config.entityScanLimit);
     game::LocalSample local{};
     if (!game::FetchLocal(reader,config,module,local) || local.game!=world ||
         !game::CandidatePosition(reader,config,local.entity,localPosition_)) return false;
-    world_=world;local_=local.entity;
+    world_=world;local_=local.entity;mapItemsRequested_=mapItemsRequested;
+    if (config.aimAssistEnabled && config.aimPredictionEnabled &&
+        game::ResolveHeldWeapon(reader,config,local_,heldWeapon_))
+        game::ResolveMuzzleBinding(reader,config,heldWeapon_,muzzleBinding_);
     return true;
 }
 SceneCache::ScanStatus SceneCache::StepRefresh(PlaceholderReader& reader,const Config& config,
@@ -218,7 +252,7 @@ SceneCache::ScanStatus SceneCache::StepRefresh(PlaceholderReader& reader,const C
     if (!world_ || !local_) return ScanStatus::Failed;
     std::uint32_t processed=0;
     while (scanSource_<sources_.size()) {
-        if (scanSource_>=5 && !ItemsRequested(config)) {
+        if (scanSource_>=5 && !ItemsRequested(config) && !mapItemsRequested_) {
             scanSource_=static_cast<std::uint32_t>(sources_.size());
             sourceLoaded_=false;sourceSlots_.clear();
             break;
@@ -252,7 +286,7 @@ SceneCache::ScanStatus SceneCache::StepRefresh(PlaceholderReader& reader,const C
     }
     return ScanStatus::Complete;
 }
-bool SceneCache::ReadMembership(PlaceholderReader& reader,const Config& config) {
+bool SceneCache::ReadMembership(PlaceholderReader& reader,const Config& config,bool collectMap) {
     auto readEntries=[&](std::size_t sourceIndex,std::uint64_t data,std::uint32_t count) {
         auto& pointers=membership_[sourceIndex];
         if (count>config.maxTableCount || count>config.entityScanLimit ||
@@ -286,7 +320,7 @@ bool SceneCache::ReadMembership(PlaceholderReader& reader,const Config& config) 
         if (valid) visual::SortMembership(pointers);
         else pointers.clear();
     }
-    if (!ItemsRequested(config)) {
+    if (!ItemsRequested(config) && !(collectMap && config.mapItemGateMeters>0)) {
         for (std::size_t i=5;i<sources_.size();++i) membership_[i].clear();
         return true;
     }
@@ -324,22 +358,46 @@ bool SceneCache::ReadMembership(PlaceholderReader& reader,const Config& config) 
     return true;
 }
 bool SceneCache::Sample(PlaceholderReader& reader,const Config& config,std::uint64_t module,
-                         std::uint64_t world,const game::CameraSample& camera,
-                         float width,float height,bool compactItems,OverlayFrame& frame) {
+                         std::uint64_t world,game::CameraSample& camera,
+                         float width,float height,bool compactItems,OverlayFrame& frame,
+                         bool collectMap,std::uint64_t sampleMs,
+                         std::uint64_t frameSequence) {
+    localVelocityValid_=false;currentSampleFrame_=0;
     if (!world_ || world_!=world) return false;
     game::LocalSample local{};game::Vec3 localPosition{};
     if (!game::FetchLocal(reader,config,module,local) || local.game!=world ||
         local.entity!=local_ ||
         !game::CandidatePosition(reader,config,local.entity,localPosition)) return false;
+    frame.opticFov=0;
+    const auto optic=game::ApplyActiveOpticProjection(reader,config,local.entity,camera);
+    frame.opticProjection=static_cast<std::uint8_t>(optic);
+    if (optic==game::OpticProjection::Invalid) return false;
+    if (optic==game::OpticProjection::PictureInPicture) {
+        const float opticFov=camera.opticFov;
+        frame.opticFov=opticFov;
+        game::CameraSample late{};
+        if (!game::FetchCameraSample(reader,config,world,late) || late.object!=camera.object)
+            return false;
+        camera=late;
+        if (!game::SetPictureInPictureProjection(camera,opticFov,config)) return false;
+    }
     frame.localPosition=localPosition;
     frame.localPositionValid=true;
-    ReadMembership(reader,config);
+    frame.localEntity=local.entity;
+    currentSampleFrame_=frameSequence;
+    localVelocityValid_=false;
+    if (config.aimAssistEnabled && config.aimPredictionEnabled && frameSequence)
+        localVelocityValid_=localVelocityHistory_.Update(local.entity,localPosition,
+            sampleMs,frameSequence,config.aimVelocityWindowMs,
+            static_cast<float>(config.aimVelocityMaxMetersPerSecond),localVelocity_);
+    ReadMembership(reader,config,collectMap);
     frame.funnel={};
     nearestPlayer_=0;
     float nearestDistance=static_cast<float>(config.gateMeters[0]);
     for (std::size_t i=0;i<maxObserved_.size();++i) frame.funnel[i].maxObserved=maxObserved_[i];
-    itemCandidates_.clear();skeletonCandidates_.clear();
-    for (const auto& object:objects_) {
+    itemCandidates_.clear();skeletonCandidates_.clear();mapOnlyItems_.clear();
+    mapPlayerPoints_.clear();
+    for (auto& object:objects_) {
         // Keep a partially exhausted sampling phase from issuing failed reads for
         // every remaining object; the reserved reads belong to cache refresh.
         if (reader.Reads()>=reader.PassCap() ||
@@ -351,42 +409,126 @@ bool SceneCache::Sample(PlaceholderReader& reader,const Config& config,std::uint
             nearestDistance=object.scanDistance;nearestPlayer_=object.entity;
         }
         ++frame.funnel[category].seen;
+        bool overlayItem=false,mapItem=false;
+        std::uint32_t overlayItemGate=0;
         if (object.kind==visual::EntityKind::Item) {
-            if (!config.showItems || !config.showItemCategory[visual::Index(object.itemKind)]) continue;
+            overlayItem=config.showItems && config.showItemCategory[visual::Index(object.itemKind)];
+            mapItem=collectMap && config.mapItemGateMeters>0;
+            if (!overlayItem && !mapItem) continue;
+            if (overlayItem) overlayItemGate=std::min(config.gateMeters[4],
+                config.itemCategoryGateMeters[visual::Index(object.itemKind)]);
         } else if (!config.showEntities[category]) continue;
         const bool localHidden=object.entity==local.entity && !config.showLocalPlayer;
         const bool skeletonEnabled=visual::SkeletonEnabled(object.kind,config.showEntities,
             config.showSkeleton);
         if (localHidden && !(skeletonEnabled && object.bonesReady)) continue;
         const auto gate=object.kind==visual::EntityKind::Item?
-            std::min(config.gateMeters[4],config.itemCategoryGateMeters[visual::Index(object.itemKind)]):
+            std::max(overlayItemGate,mapItem?config.mapItemGateMeters:0u):
             config.gateMeters[category];
+        // Map-only items wait until boxes, local item labels, and skeletons have
+        // consumed their reads. This keeps a wide map range from starving the overlay.
+        if (object.kind==visual::EntityKind::Item && mapItem &&
+            (!overlayItem || (object.hasScanDistance &&
+             object.scanDistance>static_cast<float>(overlayItemGate)+30.0f))) {
+            if ((!object.hasScanDistance || object.scanDistance<=
+                    static_cast<float>(config.mapItemGateMeters)+30.0f) &&
+                mapOnlyItems_.size()<mapOnlyItems_.capacity())
+                mapOnlyItems_.push_back(&object);
+            continue;
+        }
         // Scan-cadence range is a read gate with a small movement allowance.
         if (object.hasScanDistance && object.scanDistance>static_cast<float>(gate)+30.0f) continue;
-        game::Vec3 position{};
-        if (!game::CandidatePositionWithType(reader,config,object.entity,object.type,position)) continue;
+        game::Vec3 position{},playerFacing{};
+        game::Vec3* facing=collectMap && object.kind==visual::EntityKind::Player &&
+            object.entity!=local.entity?&playerFacing:nullptr;
+        if (!game::CandidatePositionWithType(reader,config,object.entity,object.type,
+                                             position,facing)) continue;
         const float distance=Distance(position,localPosition);
         if (!visual::WithinGate(distance,static_cast<float>(gate))) continue;
-        ++frame.funnel[category].within;
+        const bool overlayWithin=object.kind!=visual::EntityKind::Item ||
+            (overlayItem && visual::WithinGate(distance,static_cast<float>(overlayItemGate)));
+        if (overlayWithin) ++frame.funnel[category].within;
         if (object.kind==visual::EntityKind::Infected &&
             !game::CandidateInfectedAlive(reader,config,object.entity)) continue;
-        if (object.kind==visual::EntityKind::Player && config.hideDeadPlayers &&
-            !game::CandidatePlayerAlive(reader,config,object.entity)) continue;
+        bool aliveForAim=true;
+        if (object.kind==visual::EntityKind::Player &&
+            (config.hideDeadPlayers || (config.aimAssistEnabled &&
+             !config.aimSoloCalibration &&
+             distance<=static_cast<float>(config.aimGateMeters)))) {
+            aliveForAim=game::CandidatePlayerAlive(reader,config,object.entity);
+            if (config.hideDeadPlayers && !aliveForAim) continue;
+        }
+        if (config.aimAssistEnabled && config.aimPredictionEnabled && frameSequence &&
+            aliveForAim && object.entity!=local.entity &&
+            visual::AimTargetEnabled(object.kind,config.showEntities,
+                                     config.aimTargetInfected) &&
+            distance<=static_cast<float>(std::min(config.aimPredictionGateMeters,
+                                                   config.aimGateMeters))) {
+            game::Vec3 velocity{};
+            if (object.velocityHistory.Update(object.entity,position,sampleMs,frameSequence,
+                    config.aimVelocityWindowMs,
+                    static_cast<float>(config.aimVelocityMaxMetersPerSecond),velocity)) {
+                object.velocity=velocity;object.velocityFrame=frameSequence;
+            }
+        }
+        if (config.aimAssistEnabled && !config.aimSoloCalibration &&
+            aliveForAim &&
+            object.entity!=local.entity &&
+            visual::AimTargetEnabled(object.kind,config.showEntities,
+                                     config.aimTargetInfected) &&
+            distance<=static_cast<float>(config.aimGateMeters) &&
+            frame.aimCandidates.size()<frame.aimCandidates.capacity()) {
+            game::Vec3 middle=position;middle.y+=1.2f;
+            game::Vec2 projected{};bool mainView=false;
+            if (game::ProjectWorld(camera,middle,width,height,projected,&mainView))
+                frame.aimCandidates.push_back({object.entity,projected,distance,mainView});
+        }
+        const std::size_t mapIndex=frame.mapPoints.size();
+        if (collectMap && object.entity!=local.entity &&
+            (object.kind!=visual::EntityKind::Item ||
+             (mapItem && visual::WithinGate(distance,static_cast<float>(config.mapItemGateMeters)))) &&
+            mapIndex<maptelemetry::MaxPoints) {
+            maptelemetry::Point point{};
+            point.id=object.entity;
+            point.x=position.x;point.y=position.y;point.z=position.z;
+            point.distance=distance;
+            point.kind=object.kind==visual::EntityKind::Player?0:
+                object.kind==visual::EntityKind::Infected?1:
+                object.kind==visual::EntityKind::Animal?2:
+                object.kind==visual::EntityKind::Vehicle?3:4;
+            if (point.kind==0) {
+                point.headingX=playerFacing.x;
+                point.headingZ=playerFacing.z;
+            }
+            point.category=object.kind==visual::EntityKind::Item?
+                static_cast<std::uint8_t>(visual::Index(object.itemKind)):0;
+            point.life=(object.kind==visual::EntityKind::Infected ||
+                (object.kind==visual::EntityKind::Player && config.hideDeadPlayers))?
+                static_cast<std::uint8_t>(maptelemetry::Life::Alive):
+                static_cast<std::uint8_t>(maptelemetry::Life::Unknown);
+            const char* mapName=object.kind==visual::EntityKind::Player?
+                PlayerName(object.netId):object.cleanName.c_str();
+            if (mapName) std::snprintf(point.name,sizeof(point.name),"%s",mapName);
+            frame.mapPoints.push_back(point);
+            if (point.kind==0) mapPlayerPoints_.push_back({&object,mapIndex});
+        }
         if (skeletonEnabled && object.bonesReady) ++frame.skeletonBound;
         if (skeletonEnabled && object.bonesReady &&
             distance<=static_cast<float>(config.skeletonGateMeters) &&
             skeletonCandidates_.size()<skeletonCandidates_.capacity()) {
             game::Vec3 center=position;center.y+=0.9f;
             game::Vec2 projected{};
-            if (game::ProjectWorld(camera,center,width,height,projected)) {
-                skeletonCandidates_.push_back({&object,distance});
+            bool mainView=false;
+            if (game::ProjectWorld(camera,center,width,height,projected,&mainView)) {
+                skeletonCandidates_.push_back({&object,distance,mainView});
                 ++frame.skeletonEligible;
             }
         }
         if (object.kind==visual::EntityKind::Item) {
+            if (!overlayWithin) continue;
             const auto itemIndex=visual::Index(object.itemKind);
             const auto band=visual::Band(distance,static_cast<float>(config.itemCategoryNearMeters[itemIndex]),
-                static_cast<float>(config.itemCategoryMidMeters[itemIndex]),static_cast<float>(gate),
+                static_cast<float>(config.itemCategoryMidMeters[itemIndex]),static_cast<float>(overlayItemGate),
                 config.itemAnchoredLists || config.itemCategoryFarName[itemIndex]);
             if (band==visual::ItemBand::Hidden) continue;
             game::Vec2 screen{};
@@ -412,6 +554,9 @@ bool SceneCache::Sample(PlaceholderReader& reader,const Config& config,std::uint
                     (quality&0xffu)<config.itemQualityColors.size())
                     item.color=config.itemQualityColors[quality&0xffu];
             }
+            if (collectMap && mapIndex<frame.mapPoints.size() &&
+                (quality&0xffu)<5u)
+                frame.mapPoints[mapIndex].quality=static_cast<std::uint8_t>(quality&0xffu);
             visual::ItemLabel(item.label,sizeof(item.label),object.cleanName.c_str(),distance,
                 quality,band,compactItems,config.itemCategoryNearDistance[itemIndex],
                 config.itemCategoryNearQuality[itemIndex]);
@@ -420,7 +565,14 @@ bool SceneCache::Sample(PlaceholderReader& reader,const Config& config,std::uint
         }
         if (localHidden) continue;
         visual::Box box{};
-        if (!visual::ProjectBox(camera,position,BoxHeight(object.kind),
+        game::Vec3 boxCenter=position;
+        boxCenter.y+=BoxHeight(object.kind)*0.5f;
+        game::Vec2 projectedCenter{};
+        bool mainView=false;
+        if (!game::ProjectWorld(camera,boxCenter,width,height,projectedCenter,&mainView))
+            continue;
+        const auto boxCamera=game::SelectPictureInPictureView(camera,mainView);
+        if (!visual::ProjectBox(boxCamera,position,BoxHeight(object.kind),
                 BoxWidthRatio(object.kind),width,height,box)) continue;
         EntityBoxDraw draw{};draw.left=box.left;draw.top=box.top;
         draw.right=box.right;draw.bottom=box.bottom;
@@ -450,9 +602,25 @@ bool SceneCache::Sample(PlaceholderReader& reader,const Config& config,std::uint
         const auto rig=candidate.object->kind==visual::EntityKind::Infected?1u:0u;
         ++frame.skeletonEligibleByType[rig];
         std::uint32_t stage=0;
+        const auto boneCamera=game::SelectPictureInPictureView(camera,candidate.mainView);
         if (!game::SampleBonePose(reader,config,candidate.object->bones,localPosition,
-                static_cast<float>(config.skeletonGateMeters),camera,width,height,pose,&stage)) {
+                static_cast<float>(config.skeletonGateMeters),boneCamera,width,height,pose,&stage)) {
             frame.skeletonFailureStage[rig]=stage;continue;
+        }
+        if (config.aimAssistEnabled && !config.aimSoloCalibration) {
+            const auto aimCandidate=std::find_if(frame.aimCandidates.begin(),
+                frame.aimCandidates.end(),[&](const aim::Candidate& item) {
+                    return item.entity==candidate.object->entity &&
+                           item.mainView==candidate.mainView;
+                });
+            if (aimCandidate!=frame.aimCandidates.end()) {
+                const auto joint=static_cast<std::size_t>(config.aimBone);
+                if (joint<pose.screen.size() && pose.visible[joint])
+                    aimCandidate->screen=pose.screen[joint];
+                else aimCandidate->screen={
+                    std::numeric_limits<float>::quiet_NaN(),
+                    std::numeric_limits<float>::quiet_NaN()};
+            }
         }
         bool anyLine=false;
         for (std::size_t pairIndex=0;pairIndex<config.skeletonPairCounts[rig];++pairIndex) {
@@ -460,11 +628,43 @@ bool SceneCache::Sample(PlaceholderReader& reader,const Config& config,std::uint
             if (pose.visible[pair.from] && pose.visible[pair.to]) {anyLine=true;break;}
         }
         if (!anyLine) {frame.skeletonFailureStage[rig]=7;continue;}
-        SkeletonDraw draw{};draw.joints=pose.screen;draw.visible=pose.visible;
+        SkeletonDraw draw{};draw.entity=candidate.object->entity;
+        draw.joints=pose.screen;draw.world=pose.world;draw.visible=pose.visible;
         draw.kind=static_cast<std::uint8_t>(rig);
+        draw.mainView=candidate.mainView;
         draw.color=config.entityColors[visual::Index(candidate.object->kind)];
         frame.skeletons.push_back(draw);
         ++frame.skeletonSampled;
+    }
+    if (collectMap) {
+        std::string held;
+        if (reader.Reads()+12<reader.PassCap() &&
+            ReadHeldName(reader,config,local.entity,held))
+            std::snprintf(frame.localHeld.data(),frame.localHeld.size(),"%s",held.c_str());
+        for (const auto& player:mapPlayerPoints_) {
+            if (reader.Reads()+12>=reader.PassCap()) break;
+            held.clear();
+            if (player.index>=frame.mapPoints.size() ||
+                !ReadHeldName(reader,config,player.object->entity,held)) continue;
+            auto& point=frame.mapPoints[player.index];
+            std::snprintf(point.held,sizeof(point.held),"%s",held.c_str());
+        }
+    }
+    for (const Object* object:mapOnlyItems_) {
+        if (reader.Reads()+16>=reader.PassCap() ||
+            frame.mapPoints.size()>=maptelemetry::MaxPoints) break;
+        game::Vec3 position{};
+        if (!game::CandidatePositionWithType(reader,config,object->entity,object->type,
+                                             position)) continue;
+        const float distance=Distance(position,localPosition);
+        if (!visual::WithinGate(distance,static_cast<float>(config.mapItemGateMeters))) continue;
+        maptelemetry::Point point{};
+        point.id=object->entity;
+        point.x=position.x;point.y=position.y;point.z=position.z;
+        point.distance=distance;point.kind=4;
+        point.category=static_cast<std::uint8_t>(visual::Index(object->itemKind));
+        std::snprintf(point.name,sizeof(point.name),"%s",object->cleanName.c_str());
+        frame.mapPoints.push_back(point);
     }
     const auto columns=static_cast<std::uint32_t>(width)/config.itemCellPixels+1;
     const auto rows=static_cast<std::uint32_t>(height)/config.itemCellPixels+1;
@@ -642,4 +842,81 @@ bool SceneCache::Sample(PlaceholderReader& reader,const Config& config,std::uint
     }
     frame.funnel[4].drawn=static_cast<std::uint32_t>(frame.items.size());
     return true;
+}
+
+bool SceneCache::SampleAimBone(PlaceholderReader& reader,const Config& config,
+                                const game::CameraSample& camera,
+                                const OverlayFrame& frame,
+                                const aim::Selection& selected,
+                                game::Vec2& result,game::Vec3* worldResult) {
+    if (!config.aimAssistEnabled || !selected.entity || !frame.localPositionValid) return false;
+    const auto found=std::find_if(objects_.begin(),objects_.end(),
+        [&](const Object& object){return object.entity==selected.entity;});
+    if (found==objects_.end() ||
+        !visual::HasMember(membership_[found->source],found->entity) ||
+        !visual::AimTargetEnabled(found->kind,config.showEntities,
+                                  config.aimTargetInfected)) return false;
+    const auto candidate=std::find_if(frame.aimCandidates.begin(),frame.aimCandidates.end(),
+        [&](const aim::Candidate& item) {
+            return item.entity==selected.entity && item.mainView==selected.mainView &&
+                   item.distance<=static_cast<float>(config.aimGateMeters);
+        });
+    if (candidate==frame.aimCandidates.end()) return false;
+    const auto bone=static_cast<std::size_t>(config.aimBone);
+    const float cone=static_cast<float>(config.aimFovPixels);
+    for (const auto& skeleton:frame.skeletons) {
+        if (skeleton.entity!=selected.entity || skeleton.mainView!=selected.mainView) continue;
+        if (bone>=skeleton.joints.size() || !skeleton.visible[bone] ||
+            !aim::InCone(skeleton.joints[bone],static_cast<float>(frame.viewportWidth),
+                         static_cast<float>(frame.viewportHeight),
+                         cone)) return false;
+        result=skeleton.joints[bone];
+        if (worldResult) *worldResult=skeleton.world[bone];
+        return true;
+    }
+    if (!found->bonesReady) {
+        if (reader.Reads()+32>=reader.PassCap()) return false;
+        game::BoneBinding binding{};
+        if (!game::ResolveBones(reader,config,found->entity,found->type,
+                                found->kind==visual::EntityKind::Infected,binding)) return false;
+        found->bones=binding;
+        found->bonesReady=true;
+    }
+    if (reader.Reads()+16>=reader.PassCap()) return false;
+    const auto boneCamera=game::SelectPictureInPictureView(camera,selected.mainView);
+    game::BonePose pose{};
+    if (!game::SampleBonePose(reader,config,found->bones,frame.localPosition,
+            static_cast<float>(config.aimGateMeters),boneCamera,
+            static_cast<float>(frame.viewportWidth),
+            static_cast<float>(frame.viewportHeight),pose)) return false;
+    if (bone>=pose.screen.size() || !pose.visible[bone] ||
+        !aim::InCone(pose.screen[bone],static_cast<float>(frame.viewportWidth),
+                     static_cast<float>(frame.viewportHeight),
+                     cone)) return false;
+    result=pose.screen[bone];
+    if (worldResult) *worldResult=pose.world[bone];
+    return true;
+}
+
+bool SceneCache::TargetVelocity(std::uint64_t entity,game::Vec3& result) const {
+    const auto found=std::find_if(objects_.begin(),objects_.end(),
+        [entity](const Object& object){return object.entity==entity;});
+    if (found==objects_.end() || !currentSampleFrame_ ||
+        found->velocityFrame!=currentSampleFrame_) return false;
+    result=found->velocity;return true;
+}
+bool SceneCache::LocalVelocity(game::Vec3& result) const {
+    if (!localVelocityValid_) return false;
+    result=localVelocity_;return true;
+}
+bool SceneCache::PredictionSpeed(PlaceholderReader& reader,const Config& config,
+                                game::MuzzleSpeed& result,bool& fallback) const {
+    fallback=false;
+    if (!config.aimAssistEnabled || !config.aimPredictionEnabled ||
+        !heldWeapon_.weapon) return false;
+    if (muzzleBinding_.weapon &&
+        game::SampleMuzzleSpeed(reader,config,muzzleBinding_,result)) return true;
+    const float speed=config.AimFallbackMps(heldWeapon_.weaponClass);
+    if (speed<1.0f || !game::ValidateHeldWeapon(reader,config,heldWeapon_)) return false;
+    result={speed,1.0f,speed};fallback=true;return true;
 }

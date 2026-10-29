@@ -1,0 +1,65 @@
+/* Map item glyphs and per-viewer follow controls. */
+.loot-map-icon{display:flex;align-items:center;justify-content:center;border:0;background:none;box-shadow:none}
+.loot-glyph{display:block;width:14px;height:14px;filter:drop-shadow(0 0 1px #071113) drop-shadow(0 1px 1px #071113)}
+.loot-glyph svg{display:block;width:100%;height:100%;overflow:visible}
+.loot-popup{min-width:130px}
+.loot-popup-glyph{display:inline-flex;vertical-align:middle;margin-right:5px}
+.loot-popup-glyph .loot-glyph{width:17px;height:17px}
+.leaflet-tooltip.player-map-name{max-width:min(240px,calc(100vw - 24px));overflow:visible;white-space:normal;padding:0;border:0;border-radius:0;background:none;box-shadow:none;color:#f1faf6;font-size:11px;font-weight:700;line-height:1.2;letter-spacing:.01em;text-shadow:0 1px 2px #071113,0 0 5px #071113;pointer-events:none}
+.player-map-label{display:inline-flex;flex-direction:column;gap:1px;width:max-content;max-width:min(240px,calc(100vw - 24px));vertical-align:top}
+.player-map-label-top{display:flex;align-items:baseline;gap:5px;min-width:0;max-width:100%}
+.player-map-label-name{min-width:0;overflow-wrap:anywhere;white-space:normal}
+.player-map-label-distance{flex:none;color:#c3dfce;font-size:9px;font-weight:650;font-variant-numeric:tabular-nums}
+.player-map-label-held{display:block;max-width:100%;overflow-wrap:anywhere;white-space:normal;color:#c5dacb;font-size:9px;font-weight:600;line-height:1.15;letter-spacing:0}
+.player-map-label-held::before{content:'IN HAND  ';color:#91bca2;font-size:7px;font-weight:700;letter-spacing:.08em}
+.leaflet-tooltip.player-map-name::before{display:none}
+.leaflet-tooltip.player-map-name.is-decluttered:not(.is-hovered){opacity:0!important}
+.leaflet-popup-content-wrapper{background:#142123;color:#eef5ef;border:1px solid rgba(214,239,222,.18);border-radius:8px}
+.leaflet-popup-tip{background:#142123}
+.leaflet-popup-content{margin:9px 11px;font-size:12px;line-height:1.4}
+.leaflet-popup-content strong{font-weight:650}
+.leaflet-popup-content small{color:#adbbb2;font-size:10px}
+.follow-toolbar{display:flex;align-items:center;justify-content:space-between;gap:7px;padding:8px 0 10px;border-bottom:1px solid var(--line);margin-bottom:5px}
+.follow-toolbar>div:first-child{display:grid;gap:1px;min-width:0}
+.follow-toolbar small{color:var(--muted);font-size:9px;letter-spacing:.12em;font-weight:700}
+.follow-toolbar strong{font-size:11px;color:var(--mint);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.follow-actions{display:flex;gap:3px;flex:none}
+.follow-actions button,.follow-player{border:1px solid rgba(214,239,222,.18);background:rgba(255,255,255,.03);color:var(--text);border-radius:5px;padding:4px 6px;font-size:10px;font-weight:650;white-space:nowrap}
+.follow-actions button:hover,.follow-player:hover{background:rgba(158,220,186,.14);border-color:rgba(158,220,186,.4)}
+.follow-actions button.active,.player.selected .follow-player{background:rgba(158,220,186,.16);border-color:rgba(158,220,186,.46);color:#cff7df}
+.sight-switch{margin-bottom:6px;color:var(--muted);font-size:11px}
+.player{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 7px}
+.player strong{grid-column:1;min-width:0;overflow:visible;white-space:normal;overflow-wrap:anywhere}
+.player>span{grid-column:1;min-width:0}
+.player .player-held{font-size:10px;color:#c5dacb;white-space:normal;overflow-wrap:anywhere}
+.player .player-held::before{content:'IN HAND  ';color:#91bca2;font-size:8px;font-weight:700;letter-spacing:.05em}
+.player.selected{border-color:rgba(158,220,186,.45);background:rgba(158,220,186,.09)}
+.player .follow-player{grid-column:2;grid-row:1/span 3;margin-left:2px}
+@media(max-width:760px){.follow-toolbar{flex-wrap:wrap}.follow-actions{width:100%}.follow-actions button{flex:1}.player .follow-player{align-self:start}}
+
+/* Keep each card's surface behind its content while the sidebar scrolls. */
+.sidebar>.panel{flex:0 0 auto;min-height:0}
+.players-panel{overflow:hidden}
+.player-list{display:block;max-height:270px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:2px 4px 2px 0;scrollbar-width:thin;scrollbar-color:#52645b transparent}
+.player-list .player+.player{margin-top:5px}
+.player-list .empty{margin:8px 0}
+
+.nearby-panel{padding-bottom:11px}
+.nearby-panel .section-head{margin-bottom:8px}
+.nearby-panel .section-head span{max-width:114px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mint)}
+.nearby-toolbar{display:grid;grid-template-columns:76px minmax(0,1fr);gap:7px;margin-bottom:8px}
+.nearby-toolbar label{display:grid;gap:3px;color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.11em}
+.nearby-toolbar select{width:100%;min-width:0;padding:5px 20px 5px 7px;background:#1e2a2b;border:1px solid var(--line);border-radius:5px;color:var(--text);font-size:11px;letter-spacing:0;outline:none}
+.nearby-toolbar select:focus-visible,.nearby-row:focus-visible,.nearby-expand:focus-visible{outline:2px solid var(--mint);outline-offset:2px}
+.nearby-list{display:grid;gap:3px;max-height:292px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#52645b transparent;padding-right:3px}
+.nearby-list .empty{margin:7px 0 3px}
+.nearby-row{width:100%;min-width:0;display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:7px;padding:6px 7px;border:1px solid rgba(214,239,222,.07);border-radius:6px;background:rgba(255,255,255,.035);color:var(--text);text-align:left}
+.nearby-row:hover{border-color:rgba(158,220,186,.32);background:rgba(158,220,186,.09)}
+.nearby-row .loot-glyph{width:16px;height:16px}
+.nearby-row-copy{min-width:0;display:grid;gap:1px}
+.nearby-row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:650}
+.nearby-row-category{color:var(--muted);font-size:9px;letter-spacing:.04em}
+.nearby-row-distance{font-size:10px;color:#d0ddd2;font-variant-numeric:tabular-nums;white-space:nowrap}
+.nearby-expand{width:100%;margin-top:7px;padding:5px 7px;border:1px solid var(--line);border-radius:5px;background:rgba(255,255,255,.025);color:var(--mint);font-size:10px;font-weight:650;text-align:center}
+.nearby-expand:hover{background:rgba(158,220,186,.1)}
+@media(max-width:760px){.nearby-toolbar{grid-template-columns:68px minmax(0,1fr)}.nearby-row{gap:5px;padding:5px}.nearby-row-name{font-size:10px}.nearby-list{max-height:230px}}

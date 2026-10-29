@@ -15,6 +15,7 @@ struct BoneBinding {
 };
 struct BonePose {
     std::array<Vec2,JointCount> screen{};
+    std::array<Vec3,JointCount> world{};
     std::array<bool,JointCount> visible{};
 };
 
@@ -147,6 +148,7 @@ template<class Reader> bool SampleBonePose(Reader& reader,const Config& config,
                          local.x*transform[1]+local.y*transform[4]+local.z*transform[7]+transform[10],
                          local.x*transform[2]+local.y*transform[5]+local.z*transform[8]+transform[11]};
         if (!Plausible(world)) return false;
+        pending.world[joint]=world;
         pending.visible[joint]=ProjectWorld(camera,world,width,height,pending.screen[joint]);
     }
     if (stage) *stage=7;

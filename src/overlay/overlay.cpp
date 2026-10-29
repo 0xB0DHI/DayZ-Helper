@@ -72,6 +72,8 @@ std::string KeyLabel(int key) {
     case VK_INSERT:return "Insert";
     case VK_SPACE:return "Space";
     case VK_TAB:return "Tab";
+    case VK_XBUTTON1:return "Mouse side 1";
+    case VK_XBUTTON2:return "Mouse side 2";
     default:return "VK "+std::to_string(key);
     }
 }
@@ -406,6 +408,12 @@ bool Overlay::Draw(const OverlayFrame& frame,bool menuOpen,Config& config,
     ImGui_ImplDX11_NewFrame();ImGui_ImplWin32_NewFrame();ImGui::NewFrame();
     ImGui::GetIO().MouseDrawCursor=menuOpen;
     ImDrawList* draw=ImGui::GetBackgroundDrawList();
+    if (config.aimAssistEnabled && config.aimShowFov && frame.cameraValid) {
+        const ImVec2 center(static_cast<float>(frame.viewportWidth)*0.5f,
+                            static_cast<float>(frame.viewportHeight)*0.5f);
+        draw->AddCircle(center,static_cast<float>(config.aimFovPixels),
+            IM_COL32(117,226,207,115),64,1.2f);
+    }
     if (config.compactHud) {
         ImFont* font=navFont_?navFont_:ImGui::GetFont();
         char pair[64]{};
@@ -468,7 +476,7 @@ bool Overlay::Draw(const OverlayFrame& frame,bool menuOpen,Config& config,
         char budget[160]{};
         const float ratio=frame.logicalReads?
             float(frame.reads)/float(frame.logicalReads):1.0f;
-        sprintf_s(budget,"Reads %u / %u logical  |  sample ratio %.2f  |  refresh %u/min",
+        sprintf_s(budget,"Reads %u / %u logical  |  read ratio %.2f  |  refresh %u/min",
             frame.reads,frame.logicalReads,double(ratio),frame.refreshesPerMinute);
         const float debugY=config.funnelHud?246.0f:config.cameraHud?122.0f:88.0f;
         DrawTextShadow(draw,ImVec2(18,debugY),IM_COL32(175,226,207,245),budget);
@@ -581,7 +589,6 @@ bool Overlay::Draw(const OverlayFrame& frame,bool menuOpen,Config& config,
     if (menuOpen) {
         ImGui::SetNextWindowSize(ImVec2(560,680),ImGuiCond_FirstUseEver);
         ImGui::Begin("DayZ diagnostic overlay  /  settings",nullptr);
-        ImGui::TextDisabled("Public preview: data source not connected");
         ImGui::TextColored(ImVec4(0.43f,0.88f,0.79f,1.0f),"VISUALIZATIONS");
         ImGui::SameLine();ImGui::TextDisabled("  build %ls",config.version.c_str());
         ImGui::Separator();
@@ -610,6 +617,71 @@ bool Overlay::Draw(const OverlayFrame& frame,bool menuOpen,Config& config,
                     "Bone reads occur only inside this gate.");
                 changed|=ImGui::Checkbox("Show raw joint points",&config.rawBonePoints);
                 ImGui::TreePop();
+            }
+        }
+        if (ImGui::CollapsingHeader("Assisted targeting")) {
+            changed|=ImGui::Checkbox("Enable hold-key assist",&config.aimAssistEnabled);
+            changed|=ImGui::Checkbox("Target infected (assist only)",
+                                     &config.aimTargetInfected);
+            changed|=ImGui::Checkbox("Show FOV circle",&config.aimShowFov);
+            changed|=ImGui::Checkbox("Solo calibration (own pose / fixed point)",
+                                     &config.aimSoloCalibration);
+            if (config.aimSoloCalibration)
+                ImGui::TextDisabled("Own pose is display-only. Hold steers toward a fixed point for 3 s.");
+            else if (config.aimTargetInfected)
+                ImGui::TextDisabled("Targets visible players and infected; your own character is excluded.");
+            else
+                ImGui::TextDisabled("Targets visible players only; infected visualizations stay on.");
+            ImGui::TextDisabled("Read-only game data; mouse movement uses SendInput. Fire manually.");
+            ImGui::TextDisabled("Hold key: %s (virtual key %d)",
+                KeyLabel(config.aimHoldKey).c_str(),config.aimHoldKey);
+            int holdKey=config.aimHoldKey;
+            if (ImGui::InputInt("Hold key VK",&holdKey)) {
+                holdKey=std::clamp(holdKey,1,255);
+                if (holdKey!=config.panelKey && holdKey!=config.endKey &&
+                    holdKey!=config.itemToggleKey &&
+                    holdKey!=config.coordinateCopyKey) {
+                    config.aimHoldKey=holdKey;changed=true;
+                }
+            }
+            changed|=NumberControl("FOV radius (px)",config.aimFovPixels,10,1000,
+                "Radius from the center of the game render rectangle, in screen pixels.");
+            changed|=DistanceControl("Assist range",config.aimGateMeters,1,
+                1200,"Selected target bone reads may reach this range.");
+            if (ImGui::TreeNode("Prediction")) {
+                changed|=ImGui::Checkbox("Predict moving targets",&config.aimPredictionEnabled);
+                ImGui::TextDisabled("Uses measured target motion and held-ammo speed. Default off.");
+                changed|=DistanceControl("Prediction range",config.aimPredictionGateMeters,1,
+                    static_cast<int>(config.aimGateMeters),
+                    "World positions are tracked only within this range.");
+                changed|=NumberControl("Velocity window (ms)",config.aimVelocityWindowMs,
+                    100,300,"Shorter reacts faster; longer smooths movement.");
+                if (config.aimPredictionGateMeters>config.aimGateMeters) {
+                    config.aimPredictionGateMeters=config.aimGateMeters;changed=true;
+                }
+                ImGui::TextDisabled("Optional per-weapon fallback speeds live in dayz.ini.");
+                ImGui::TreePop();
+            }
+            constexpr const char* bones[]={"Head","Neck","Chest / spine"};
+            int bone=static_cast<int>(config.aimBone);
+            if (ImGui::Combo("Target bone",&bone,bones,3)) {
+                config.aimBone=static_cast<std::uint32_t>(bone);changed=true;
+            }
+            changed|=NumberControl("Snap",config.aimSnapStrength,1,20,
+                "Higher values catch up faster. 5 matches the original response; 11-20 are the stronger range.");
+            changed|=NumberControl("Stickiness",config.aimHysteresisPercent,0,400,
+                "Only stabilizes near-ties inside the FOV circle (up to 1 pixel). A clearly closer target takes priority.");
+            if (ImGui::TreeNode("Advanced motion limits")) {
+                changed|=NumberControl("Maximum rate (px/s)",
+                    config.aimRatePixelsPerSecond,10,5000,
+                    "Base limit; Snap scales the effective maximum rate.");
+                changed|=NumberControl("Acceleration (px/s2)",
+                    config.aimAccelerationPixelsPerSecond2,10,20000,
+                    "Base limit; Snap scales the effective acceleration.");
+                ImGui::TreePop();
+            }
+            if (config.aimPredictionGateMeters>config.aimGateMeters) {
+                config.aimPredictionGateMeters=config.aimGateMeters;changed=true;
             }
         }
         if (ImGui::CollapsingHeader("Items",ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -765,21 +837,22 @@ bool Overlay::Draw(const OverlayFrame& frame,bool menuOpen,Config& config,
         if (ImGui::CollapsingHeader("Hotkeys")) {
             ImGui::TextDisabled("Windows virtual-key codes: F1 112, F2 113, F3 114, End 35.");
             int keys[]={config.panelKey,config.endKey,config.itemToggleKey,
-                config.coordinateCopyKey};
+                config.coordinateCopyKey,config.aimHoldKey};
             const char* hotkeyLabels[]={"Open panel","Exit overlay","Toggle items",
-                "Copy iZurvive coordinates"};
-            for (int i=0;i<4;++i) {
+                "Copy iZurvive coordinates","Hold aim assist"};
+            for (int i=0;i<5;++i) {
                 ImGui::PushID(i+300);
                 if (ImGui::InputInt(hotkeyLabels[i],&keys[i])) {
                     keys[i]=std::clamp(keys[i],1,255);
                     bool unique=true;
-                    for (int other=0;other<4;++other)
+                    for (int other=0;other<5;++other)
                         if (other!=i && keys[i]==keys[other]) unique=false;
                     if (unique) {
                         if (i==0) config.panelKey=keys[i];
                         else if (i==1) config.endKey=keys[i];
                         else if (i==2) config.itemToggleKey=keys[i];
-                        else config.coordinateCopyKey=keys[i];
+                        else if (i==3) config.coordinateCopyKey=keys[i];
+                        else config.aimHoldKey=keys[i];
                         changed=true;
                     }
                 }
@@ -804,6 +877,7 @@ bool Overlay::Draw(const OverlayFrame& frame,bool menuOpen,Config& config,
                     if ((GetAsyncKeyState(key)&1)==0) continue;
                     if (key==VK_ESCAPE) {bindingItemKey_=false;bindingCopyKey_=false;}
                     else if (key!=config.panelKey && key!=config.endKey &&
+                             key!=config.aimHoldKey &&
                              key!=(bindingItemKey_?config.coordinateCopyKey:
                                    config.itemToggleKey)) {
                         if (bindingItemKey_) config.itemToggleKey=key;

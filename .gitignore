@@ -13,5 +13,10 @@ out/
 *.user
 *.tlog
 dayz.ini
+maptelemetry.ini
+maptelemetry/web/tiles/
+notes/
+__pycache__/
+*.pending
 Desktop.ini
 Thumbs.db

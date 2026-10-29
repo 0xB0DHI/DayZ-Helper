@@ -1,6 +1,8 @@
 #include "app.h"
 #include "scene.h"
+#include "map_publisher.h"
 #include "../config/config.h"
+#include "../config/map_telemetry_settings.h"
 #include "../data/placeholder_reader.h"
 #include "../game/game.h"
 #include "../overlay/overlay.h"
@@ -176,7 +178,6 @@ int RunApp() {
     PlaceholderReader reader{};
     reader.SetHardCap(config.maxReads);
     // Public preview: no module discovery or live game-data acquisition.
-    constexpr bool dataSourceConnected=false;
     constexpr std::uint64_t moduleBase=0;
     const wchar_t* className=L"DayZDiagnosticOverlayWindow";
     WNDCLASSEXW cls{};cls.cbSize=sizeof(cls);cls.lpfnWndProc=OverlayProc;
@@ -214,16 +215,38 @@ int RunApp() {
     bool menuOpen=false,running=true;
     MarkerCache marker{};
     SceneCache scene{},scanScratch{};
+    MapPublisher mapPublisher{};
+    mapPublisher.Start(); // an idle pipe wait; no frame work until a client connects
+    const std::uint64_t mapSalt=maptelemetry::EphemeralId(
+        static_cast<std::uint64_t>(GetTickCount64()),static_cast<std::uint64_t>(pid));
+    std::uint64_t mapSequence=0;
+    auto nextMapPublish=std::chrono::steady_clock::time_point::min();
     bool scanInProgress=false;
     OverlayFrame frame{};frame.boxes.reserve(config.entityScanLimit);
     frame.items.reserve(config.entityScanLimit);
     frame.itemGroups.reserve(config.entityScanLimit);
     frame.skeletons.reserve(config.entityScanLimit);
+    frame.aimCandidates.reserve(config.entityScanLimit);
+    aim::Motion aimMotion{};
+    game::Vec3 calibrationWorld{};
+    bool calibrationActive=false;
+    auto calibrationStarted=std::chrono::steady_clock::time_point::min();
+    std::uint64_t aimTarget=0;
+    std::uint64_t sampleSequence=0;
+    std::uint32_t aimSwitches=0,aimTriggerPresses=0,aimConvergences=0;
+    bool aimWasHeld=false,aimConverged=false;
+    auto aimStarted=std::chrono::steady_clock::time_point::min();
+    std::ofstream aimLog("notes/aim-assist-session.log",std::ios::app);
+    if (aimLog && config.aimAssistEnabled)
+        aimLog<<"SESSION aim enabled bone="<<config.aimBone<<" fov_px="
+              <<config.aimFovPixels<<" gate_m="<<config.aimGateMeters<<'\n';
     bool compactItems=config.itemCompact;
     std::ofstream telemetry("notes/milestone2-runtime.log",std::ios::app);
     if (telemetry) telemetry<<"SESSION adaptive-scan hard_cap="<<config.maxReads<<'\n';
     std::array<float,5> rangeMax{};
     std::uint32_t secondFrames=0,secondReads=0,secondLogicalReads=0;
+    std::uint32_t secondMapFrames=0,peakMapItems=0;
+    float farthestMapItem=0;
     std::uint32_t peakReads=0,peakFailures=0;
     std::uint32_t refreshCompleted=0,peakRefreshReads=0;
     std::deque<std::chrono::steady_clock::time_point> recentRefreshes;
@@ -245,6 +268,8 @@ int RunApp() {
         const HWND foreground=GetForegroundWindow();
         if (foreground) GetWindowThreadProcessId(foreground,&foregroundPid);
         if (foregroundPid!=pid && !(menuOpen && foreground==inputWindow)) {
+            aimMotion.Reset();aimWasHeld=false;aimTarget=0;aimConverged=false;
+            calibrationActive=false;
             if (menuOpen) {menuOpen=false;MenuInteraction(inputWindow,false);}
             if (IsWindowVisible(window)) ShowWindow(window,SW_HIDE);
             Sleep(16);continue;
@@ -271,27 +296,41 @@ int RunApp() {
             if (!renderer.Resize(static_cast<UINT>(next.right-next.left),static_cast<UINT>(next.bottom-next.top))) break;
         }
         const auto now=std::chrono::steady_clock::now();
+        const auto sampleMs=static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()).count());
+        ++sampleSequence;
         const auto seconds=std::chrono::duration<float>(now-last).count();last=now;
-        frame.boxes.clear();frame.items.clear();frame.itemGroups.clear();
-        frame.skeletons.clear();frame.funnel={};
+        frame.boxes.clear();frame.items.clear();frame.itemGroups.clear();frame.mapPoints.clear();
+        frame.skeletons.clear();frame.aimCandidates.clear();frame.funnel={};
+        frame.aimBoneValid=false;frame.aimSelected={};
         frame.skeletonBound=frame.skeletonEligible=frame.skeletonSampled=0;
         frame.skeletonEligibleByType.fill(0);frame.skeletonFailureStage.fill(0);
         frame.healthWatchValid=frame.deathLocalValid=frame.deathNearbyValid=false;
         frame.cameraValid=false;frame.markerValid=false;frame.markerStage=0;
+        frame.opticProjection=0;frame.opticFov=0;
         frame.localPositionValid=false;frame.localPosition={};frame.cameraForward={};
+        frame.localHeld.fill(0);
+        frame.localEntity=0;
         frame.scanLocal=false;frame.scanEntries=frame.scanInfected=0;
         frame.scanPositioned=frame.scanFront=frame.scanProjected=0;
         frame.compactItems=compactItems;
         frame.attached=IsWindow(gameWindow)!=FALSE;
-        frame.dataSourceConnected=dataSourceConnected;
         frame.moduleBase=moduleBase;
         frame.fps=seconds>0?1.0f/seconds:0;
         frame.viewportWidth=static_cast<std::uint32_t>(bounds.right-bounds.left);
         frame.viewportHeight=static_cast<std::uint32_t>(bounds.bottom-bounds.top);
+        const bool collectMap=mapPublisher.Connected() && now>=nextMapPublish;
+        if (collectMap) nextMapPublish=now+
+            std::chrono::milliseconds(maptelemetry::PublishIntervalMs);
         reader.BeginPass();
         reader.SetPassCap(visual::AdaptiveReadCap(scene.ObjectCount(),config.maxReads));
         const auto frameCap=reader.PassCap();
+        game::MuzzleSpeed frameMuzzle{};
+        bool frameMuzzleValid=false,frameMuzzleFallback=false;
         // First target read of the frame is the main camera chain. Its output is cleared each iteration.
+        bool sceneValid=false;
+        char frameTerrain[32]{};
         if (moduleBase) {
             std::uint64_t world=0;
             game::CameraSample cameraSample{};
@@ -306,12 +345,116 @@ int RunApp() {
                     reader.SetPassCap(visual::ScanSampleCap(frameCap));
                 if (config.infectedMarker && config.showEntities[1])
                     frame.markerStage=frame.cameraValid?2u:1u;
-                bool sceneValid=false;
                 if (frame.cameraValid && scene.World()==world) {
                     sceneValid=scene.Sample(reader,config,moduleBase,world,cameraSample,
                         static_cast<float>(frame.viewportWidth),
-                        static_cast<float>(frame.viewportHeight),compactItems,frame);
+                        static_cast<float>(frame.viewportHeight),compactItems,frame,
+                        collectMap,sampleMs,sampleSequence);
                     if (!sceneValid) nextSceneScan=std::chrono::steady_clock::time_point::min();
+                }
+                if (config.aimAssistEnabled && sceneValid && frame.cameraValid) {
+                    const bool held=!menuOpen && !renderer.BindingHotkey() &&
+                        (GetAsyncKeyState(config.aimHoldKey)&0x8000)!=0;
+                    if (config.aimSoloCalibration) {
+                        aimTarget=0;
+                        if (held && !aimWasHeld) {
+                            const auto& c=cameraSample;
+                            calibrationWorld={c.position.x+c.forward.x*25.0f+c.right.x*2.0f,
+                                c.position.y+c.forward.y*25.0f+c.right.y*2.0f,
+                                c.position.z+c.forward.z*25.0f+c.right.z*2.0f};
+                            calibrationStarted=now;calibrationActive=true;
+                            aimMotion.Reset();
+                        }
+                        if (!held) calibrationActive=false;
+                        if (calibrationActive && now-calibrationStarted<std::chrono::seconds(3)) {
+                            game::Vec2 point{};
+                            if (game::ProjectWorld(cameraSample,calibrationWorld,
+                                    static_cast<float>(frame.viewportWidth),
+                                    static_cast<float>(frame.viewportHeight),point) &&
+                                aim::InCone(point,static_cast<float>(frame.viewportWidth),
+                                    static_cast<float>(frame.viewportHeight),
+                                    static_cast<float>(config.aimFovPixels))) {
+                                frame.aimBoneScreen=point;frame.aimBoneValid=true;
+                            }
+                        }
+                    } else {
+                        calibrationActive=false;
+                        frame.aimSelected=aim::Select(frame.aimCandidates,aimTarget,
+                            static_cast<float>(frame.viewportWidth),
+                            static_cast<float>(frame.viewportHeight),
+                            static_cast<float>(config.aimFovPixels),
+                            static_cast<float>(config.aimHysteresisPercent));
+                        if (frame.aimSelected.entity!=aimTarget) {
+                            ++aimSwitches;
+                            if (aimLog) aimLog<<"SWITCH from="<<aimTarget<<" to="
+                                <<frame.aimSelected.entity<<" center_px="
+                                <<frame.aimSelected.centerPixels<<'\n';
+                            aimTarget=frame.aimSelected.entity;
+                            aimMotion.Reset();aimConverged=false;aimStarted=now;
+                        }
+                        game::Vec3 boneWorld{};
+                        frame.aimBoneValid=scene.SampleAimBone(reader,config,cameraSample,
+                            frame,frame.aimSelected,frame.aimBoneScreen,&boneWorld);
+                        if (config.aimPredictionEnabled && held && frame.aimBoneValid &&
+                            reader.Reads()+20<reader.PassCap()) {
+                            frameMuzzleValid=scene.PredictionSpeed(reader,config,
+                                frameMuzzle,frameMuzzleFallback);
+                            if (frameMuzzleValid) {
+                                const auto delta=game::Difference(boneWorld,cameraSample.position);
+                                const float distance=std::sqrt(game::Dot(delta,delta));
+                                if (std::isfinite(distance) && distance<=
+                                    static_cast<float>(config.aimPredictionGateMeters)) {
+                                    game::Vec3 velocity{},predicted{};
+                                    scene.TargetVelocity(frame.aimSelected.entity,velocity);
+                                    if (aim::Intercept(cameraSample.position,boneWorld,velocity,
+                                            frameMuzzle.effective,predicted)) {
+                                        game::Vec2 leadScreen{};
+                                        const auto view=game::SelectPictureInPictureView(
+                                            cameraSample,frame.aimSelected.mainView);
+                                        if (game::ProjectWorld(view,predicted,
+                                                static_cast<float>(frame.viewportWidth),
+                                                static_cast<float>(frame.viewportHeight),leadScreen))
+                                            frame.aimBoneScreen=leadScreen;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (config.aimPredictionEnabled && !frameMuzzleValid &&
+                        now>=nextTelemetry && reader.Reads()+20<reader.PassCap())
+                        frameMuzzleValid=scene.PredictionSpeed(reader,config,
+                            frameMuzzle,frameMuzzleFallback);
+                    if (held && !aimWasHeld) {aimStarted=now;aimConverged=false;}
+                    if (held && !config.aimSoloCalibration &&
+                        (GetAsyncKeyState(VK_LBUTTON)&1)) ++aimTriggerPresses;
+                    if (held && frame.aimBoneValid) {
+                        const auto error=aim::CenterDistance(frame.aimBoneScreen,
+                            static_cast<float>(frame.viewportWidth),
+                            static_cast<float>(frame.viewportHeight));
+                        if (!aimConverged && error<=aim::SettleRadiusPixels) {
+                            aimConverged=true;++aimConvergences;
+                            if (aimLog) aimLog<<"CONVERGED entity="<<aimTarget
+                                <<" calibration="<<config.aimSoloCalibration
+                                <<" ms="<<std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     now-aimStarted).count()<<'\n';
+                        }
+                        const auto delta=aim::Step(aimMotion,frame.aimBoneScreen,
+                            static_cast<float>(frame.viewportWidth),
+                            static_cast<float>(frame.viewportHeight),seconds,
+                            static_cast<float>(config.aimRatePixelsPerSecond),
+                            static_cast<float>(config.aimAccelerationPixelsPerSecond2),
+                            static_cast<float>(config.aimSnapStrength));
+                        if (delta.x || delta.y) {
+                            INPUT movement{};movement.type=INPUT_MOUSE;
+                            movement.mi.dwFlags=MOUSEEVENTF_MOVE;
+                            movement.mi.dx=delta.x;movement.mi.dy=delta.y;
+                            if (SendInput(1,&movement,sizeof(movement))!=1) aimMotion.Reset();
+                        }
+                    } else aimMotion.Reset();
+                    aimWasHeld=held;
+                } else {
+                    aimTarget=0;aimMotion.Reset();aimWasHeld=false;aimConverged=false;
+                    calibrationActive=false;
                 }
                 if (frame.cameraValid &&
                     (config.watchHealthCandidates || config.watchDeathCandidates)) {
@@ -374,7 +517,8 @@ int RunApp() {
                 reader.SetPassCap(frameCap);
                 if (scanCameraValid) {
                     if (!scanInProgress && now>=nextSceneScan) {
-                        scanInProgress=scanScratch.BeginRefresh(reader,config,moduleBase,world);
+                        scanInProgress=scanScratch.BeginRefresh(reader,config,moduleBase,world,
+                            mapPublisher.Connected() && config.mapItemGateMeters>0);
                         if (!scanInProgress)
                             nextSceneScan=now+std::chrono::milliseconds(250);
                     }
@@ -396,12 +540,45 @@ int RunApp() {
                 peakRefreshReads=std::max(peakRefreshReads,reader.Reads()-refreshReadStart);
             }
         }
+        if (collectMap && sceneValid && frame.cameraValid && frame.localPositionValid &&
+            reader.Reads()<reader.PassCap()) {
+            // Terrain is sampled only for map publication, after camera/entity work.
+            // A failed optional read leaves the terrain blank without dropping positions.
+            game::FetchTerrainName(reader,config,moduleBase,frameTerrain);
+        }
         while (!recentRefreshes.empty() &&
                now-recentRefreshes.front()>=std::chrono::minutes(1))
             recentRefreshes.pop_front();
         frame.reads=reader.Reads();frame.logicalReads=reader.LogicalReads();
         frame.refreshesPerMinute=static_cast<std::uint32_t>(recentRefreshes.size());
         frame.failed=reader.Failures();
+        if (collectMap) {
+            maptelemetry::Snapshot snapshot{};
+            auto& h=snapshot.header;
+            h.sequence=++mapSequence;
+            h.utcMilliseconds=static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            if (sceneValid && frame.cameraValid && frame.localPositionValid) {
+                h.flags=3;
+                std::memcpy(h.terrain,frameTerrain,sizeof(h.terrain));
+                h.localX=frame.localPosition.x;h.localY=frame.localPosition.y;
+                h.localZ=frame.localPosition.z;
+                h.headingX=frame.cameraForward.x;h.headingZ=frame.cameraForward.z;
+                std::memcpy(h.localHeld,frame.localHeld.data(),sizeof(h.localHeld));
+                snapshot.points.swap(frame.mapPoints);
+                for (auto& point:snapshot.points) {
+                    if (point.kind==4) farthestMapItem=std::max(farthestMapItem,point.distance);
+                    point.id=maptelemetry::EphemeralId(point.id,mapSalt);
+                    ++h.counts[point.kind];
+                }
+                h.count=static_cast<std::uint32_t>(snapshot.points.size());
+                peakMapItems=std::max(peakMapItems,h.counts[4]);
+                ++secondMapFrames;
+            }
+            mapPublisher.Submit(snapshot);
+            frame.mapPoints.swap(snapshot.points);
+        }
         if (copyRequested) {
             char pair[64]{};
             if (!frame.localPositionValid ||
@@ -418,17 +595,38 @@ int RunApp() {
         for (std::size_t i=0;i<rangeMax.size();++i)
             rangeMax[i]=std::max(rangeMax[i],frame.funnel[i].maxObserved);
         if (now>=nextTelemetry && telemetry) {
+            if (aimLog && config.aimAssistEnabled && config.aimPredictionEnabled) {
+                game::Vec3 velocity{};
+                const bool localVelocityValid=sceneValid && scene.LocalVelocity(velocity);
+                const float localMps=localVelocityValid?
+                    std::sqrt(game::Dot(velocity,velocity)):0.0f;
+                aimLog<<"PREDICT local_valid="<<localVelocityValid
+                    <<" local_mps="<<localMps
+                    <<" weapon="<<scene.WeaponClass()
+                    <<" muzzle_valid="<<frameMuzzleValid
+                    <<" fallback="<<frameMuzzleFallback;
+                if (frameMuzzleValid)
+                    aimLog<<" init_mps="<<frameMuzzle.base
+                          <<" multiplier="<<frameMuzzle.multiplier
+                          <<" effective_mps="<<frameMuzzle.effective;
+                aimLog<<'\n';aimLog.flush();
+            }
             telemetry<<"SAMPLE fps_min="<<minimumFps<<" reads_avg="
                 <<(secondFrames?secondReads/secondFrames:0)<<" reads_peak="<<peakReads
                 <<" logical_avg="<<(secondFrames?secondLogicalReads/secondFrames:0)
-                <<" ioctl_ratio="<<(secondLogicalReads?
+                <<" read_ratio="<<(secondLogicalReads?
                     double(secondReads)/double(secondLogicalReads):1.0)
                 <<" failures_peak="<<peakFailures<<" cap="<<reader.PassCap()
+                <<" map_frames="<<secondMapFrames
+                <<" map_items_peak="<<peakMapItems
+                <<" map_item_farthest_m="<<farthestMapItem
                 <<" scanning="<<scanInProgress
                 <<" refresh_completed="<<refreshCompleted
                 <<" refresh_per_min="<<frame.refreshesPerMinute
                 <<" refresh_reads_peak="<<peakRefreshReads
                 <<" camera="<<frame.cameraValid
+                <<" optic="<<static_cast<unsigned>(frame.opticProjection)
+                <<" optic_fov="<<frame.opticFov
                 <<" skeleton_bound="<<frame.skeletonBound
                 <<" skeleton_eligible="<<frame.skeletonEligible
                 <<" skeleton_drawn="<<frame.skeletonSampled
@@ -463,17 +661,25 @@ int RunApp() {
             }
             telemetry<<'\n';telemetry.flush();
             secondFrames=secondReads=secondLogicalReads=peakReads=peakFailures=0;
+            secondMapFrames=peakMapItems=0;farthestMapItem=0;
             refreshCompleted=peakRefreshReads=0;minimumFps=100000.0f;
             nextTelemetry=now+std::chrono::seconds(1);
         }
         bool configChanged=false;
         if (!renderer.Draw(frame,menuOpen,config,compactItems,configChanged)) break;
         if (configChanged) {
+            aimTarget=0;aimMotion.Reset();aimWasHeld=false;aimConverged=false;
+            calibrationActive=false;
             reader.SetHardCap(config.maxReads);
             scene.Clear();scanScratch.Clear();scanInProgress=false;
             nextSceneScan=std::chrono::steady_clock::time_point::min();
         }
     }
+    if (aimLog && config.aimAssistEnabled)
+        aimLog<<"TOTAL trigger_presses="<<aimTriggerPresses
+              <<" target_switches="<<aimSwitches
+              <<" convergences="<<aimConvergences<<'\n';
+    mapPublisher.Stop();
     g_menuOpen=false;g_imguiReady=false;renderer.Shutdown();
     DestroyWindow(inputWindow);UnregisterClassW(inputClass,cls.hInstance);
     DestroyWindow(window);UnregisterClassW(className,cls.hInstance);

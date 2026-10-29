@@ -9,6 +9,8 @@
 #include <string>
 #include "../game/game.h"
 #include "../game/skeleton.h"
+#include "../game/aim_assist.h"
+#include "../game/map_telemetry.h"
 
 struct Config;
 struct ImFont;
@@ -37,19 +39,25 @@ struct ItemGroupDraw {
     int priority=0;
 };
 struct SkeletonDraw {
+    std::uint64_t entity=0;
     std::array<game::Vec2,game::JointCount> joints{};
+    std::array<game::Vec3,game::JointCount> world{};
     std::array<bool,game::JointCount> visible{};
     std::uint32_t color=0;
     std::uint8_t kind=0;
+    bool mainView=false;
 };
 struct FunnelCount { std::uint32_t seen=0,within=0,drawn=0; float maxObserved=0; };
 
 struct OverlayFrame {
     bool attached=false;
-    bool dataSourceConnected=false;
     bool cameraValid=false;
+    std::uint8_t opticProjection=0;
+    float opticFov=0;
     bool localPositionValid=false;
+    std::uint64_t localEntity=0;
     game::Vec3 localPosition{},cameraForward{};
+    std::array<char,64> localHeld{};
     std::uint64_t moduleBase=0;
     float fps=0;
     std::uint32_t reads=0,failed=0;
@@ -66,6 +74,11 @@ struct OverlayFrame {
     std::vector<ItemLabelDraw> items;
     std::vector<ItemGroupDraw> itemGroups;
     std::vector<SkeletonDraw> skeletons;
+    std::vector<aim::Candidate> aimCandidates;
+    bool aimBoneValid=false;
+    game::Vec2 aimBoneScreen{};
+    aim::Selection aimSelected{};
+    std::vector<maptelemetry::Point> mapPoints;
     std::uint32_t skeletonBound=0,skeletonEligible=0,skeletonSampled=0;
     std::array<std::uint32_t,2> skeletonEligibleByType{},skeletonFailureStage{};
     bool compactItems=false;
